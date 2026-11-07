@@ -1,39 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { itemsApi } from '../api/items'
-import { PriorityBadge, StatusBadge } from '../components/Badges'
+import { StatusBadge } from '../components/Badges'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { EmptyState, ErrorState, LoadingState } from '../components/States'
 import { useToast } from '../components/ToastProvider'
-import { useDebouncedValue } from '../hooks/useDebouncedValue'
-import { formatDateTime, getErrorMessage } from '../lib/format'
-import type { Item, ItemStatus } from '../types'
+import { formatAmount, formatDateTime, getErrorMessage } from '../lib/format'
+import type { Item } from '../types'
 
-const STATUS_FILTERS = [
-  { value: 'all', label: '全部' },
-  { value: 'todo', label: '待处理' },
-  { value: 'doing', label: '进行中' },
-  { value: 'done', label: '已完成' },
-] as const
+/** 每页条数，后端允许 1–100 */
+const PAGE_SIZE = 20
 
-type StatusFilter = (typeof STATUS_FILTERS)[number]['value']
-
-/** 列表页（查）：支持状态筛选、关键字搜索、跳转详情 / 编辑、删除 */
+/** 列表页（查）：分页浏览、跳转详情 / 编辑、删除 */
 export function ItemListPage() {
   const navigate = useNavigate()
   const { showToast } = useToast()
 
+  /** 页码从 0 开始，对应接口的 offset */
+  const [page, setPage] = useState(0)
   const [items, setItems] = useState<Item[]>([])
+  const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
-  const [keyword, setKeyword] = useState('')
-  const debouncedKeyword = useDebouncedValue(keyword, 300)
 
   const [pendingDelete, setPendingDelete] = useState<Item | null>(null)
   const [deleting, setDeleting] = useState(false)
 
-  // 用自增序号丢弃过期响应，避免快速切换筛选时旧数据覆盖新数据
+  // 丢弃过期响应，避免快速翻页时旧数据覆盖新数据
   const requestId = useRef(0)
 
   const load = useCallback(async () => {
@@ -41,24 +34,23 @@ export function ItemListPage() {
     setLoading(true)
     setError(null)
     try {
-      const data = await itemsApi.list({
-        status: statusFilter === 'all' ? undefined : (statusFilter as ItemStatus),
-        q: debouncedKeyword.trim() || undefined,
-      })
+      const result = await itemsApi.list({ limit: PAGE_SIZE, offset: page * PAGE_SIZE })
       if (currentId !== requestId.current) return
-      setItems(data.items)
-      setError(null)
+      setItems(result.items)
+      setTotal(result.total)
     } catch (err) {
       if (currentId !== requestId.current) return
       setError(getErrorMessage(err))
     } finally {
       if (currentId === requestId.current) setLoading(false)
     }
-  }, [statusFilter, debouncedKeyword])
+  }, [page])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   const handleDelete = async () => {
     if (!pendingDelete) return
@@ -66,8 +58,13 @@ export function ItemListPage() {
     try {
       await itemsApi.remove(pendingDelete.id)
       setPendingDelete(null)
-      showToast('事项已删除')
-      await load()
+      showToast('记录已删除')
+      // 删掉的是当前页最后一条时，回退一页，避免停在空白页
+      if (items.length === 1 && page > 0) {
+        setPage((current) => current - 1)
+      } else {
+        await load()
+      }
     } catch (err) {
       showToast(getErrorMessage(err), 'error')
     } finally {
@@ -75,51 +72,20 @@ export function ItemListPage() {
     }
   }
 
-  const hasFilter = statusFilter !== 'all' || keyword.trim() !== ''
-
   return (
     <>
       <div className="page-head">
         <div>
-          <p className="eyebrow">事项管理</p>
-          <h1>全部事项</h1>
+          <p className="eyebrow">自检记录</p>
+          <h1>记录列表</h1>
           <p className="subtitle">
-            {loading ? '正在加载…' : `共 ${items.length} 条记录${hasFilter ? '（已筛选）' : ''}`}
+            {loading ? '正在加载…' : `共 ${total} 条记录`}
+            {!loading && total > 0 && `，第 ${page + 1} / ${totalPages} 页`}
           </p>
         </div>
         <Link className="btn btn-primary" to="/items/new">
-          <span aria-hidden="true">＋</span> 新建事项
+          <span aria-hidden="true">＋</span> 新建记录
         </Link>
-      </div>
-
-      <div className="toolbar card">
-        <div className="search-box">
-          <span className="search-icon" aria-hidden="true">
-            ⌕
-          </span>
-          <input
-            className="input search-input"
-            type="search"
-            placeholder="搜索标题或描述…"
-            value={keyword}
-            onChange={(event) => setKeyword(event.target.value)}
-            aria-label="搜索事项"
-          />
-        </div>
-
-        <div className="segmented" role="group" aria-label="按状态筛选">
-          {STATUS_FILTERS.map((filter) => (
-            <button
-              key={filter.value}
-              type="button"
-              className={`segmented-item${statusFilter === filter.value ? ' is-active' : ''}`}
-              aria-pressed={statusFilter === filter.value}
-              onClick={() => setStatusFilter(filter.value)}
-            >
-              {filter.label}
-            </button>
-          ))}
-        </div>
       </div>
 
       {error && <ErrorState message={error} onRetry={() => void load()} />}
@@ -128,10 +94,8 @@ export function ItemListPage() {
         <LoadingState />
       ) : items.length === 0 && !error ? (
         <EmptyState
-          title={hasFilter ? '没有符合条件的事项' : '还没有任何事项'}
-          description={
-            hasFilter ? '试试调整搜索关键字或状态筛选。' : '点击右上角「新建事项」创建第一条记录。'
-          }
+          title="还没有任何记录"
+          description="点击右上角「新建记录」创建第一条记录。"
         />
       ) : (
         <div className="item-list">
@@ -146,16 +110,16 @@ export function ItemListPage() {
                   <span className={`status-dot status-dot-${item.status}`} aria-hidden="true" />
                   <h2>
                     <Link to={`/items/${item.id}`} className="item-title-link">
-                      {item.title}
+                      {item.name}
                     </Link>
                   </h2>
+                  <span className="biz-no mono">{item.biz_no}</span>
                 </div>
-                <p className="item-desc">{item.description || '暂无描述'}</p>
+                <p className="item-desc">{item.remark || '暂无备注'}</p>
                 <div className="item-meta">
                   <StatusBadge status={item.status} />
-                  <PriorityBadge priority={item.priority} />
-                  {item.dueDate && <span className="meta-text">截止 {item.dueDate}</span>}
-                  <span className="meta-text">更新于 {formatDateTime(item.updatedAt)}</span>
+                  <span className="meta-amount">{formatAmount(item.amount)}</span>
+                  <span className="meta-text">更新于 {formatDateTime(item.updated_at)}</span>
                 </div>
               </div>
 
@@ -176,10 +140,34 @@ export function ItemListPage() {
         </div>
       )}
 
+      {total > PAGE_SIZE && (
+        <div className="pagination card">
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => setPage((current) => Math.max(0, current - 1))}
+            disabled={page === 0 || loading}
+          >
+            上一页
+          </button>
+          <span className="pagination-info">
+            第 {page + 1} / {totalPages} 页 · 共 {total} 条
+          </span>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => setPage((current) => Math.min(totalPages - 1, current + 1))}
+            disabled={page >= totalPages - 1 || loading}
+          >
+            下一页
+          </button>
+        </div>
+      )}
+
       <ConfirmDialog
         open={pendingDelete !== null}
-        title="删除事项"
-        description={`确定要删除「${pendingDelete?.title ?? ''}」吗？删除后无法恢复。`}
+        title="删除记录"
+        description={`确定要删除「${pendingDelete?.name ?? ''}」吗？该记录将不再出现在列表中。`}
         loading={deleting}
         onConfirm={() => void handleDelete()}
         onCancel={() => setPendingDelete(null)}

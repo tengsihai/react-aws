@@ -1,6 +1,6 @@
 # react-aws 前端工程
 
-基于 **React + TypeScript + Vite** 的事项管理前端，包含增、删、改、查四个页面。
+基于 **React + TypeScript + Vite** 的自检记录管理前端，包含增、删、改、查四个页面。
 静态资源托管在 **Amazon S3**，通过 **Amazon CloudFront** 分发，使用 **GitHub Actions**
 发布。
 
@@ -14,16 +14,17 @@
 
 | 页面 | 路由 | 对应操作 |
 | --- | --- | --- |
-| 事项列表 | `/items` | 查：列表、状态筛选、关键字搜索、删除 |
-| 新建事项 | `/items/new` | 增：填写表单创建 |
-| 事项详情 | `/items/:id` | 查：单条详情、编辑 / 删除入口 |
-| 编辑事项 | `/items/:id/edit` | 改：修改后保存 |
+| 记录列表 | `/items` | 查：分页列表、跳转详情、删除 |
+| 新建记录 | `/items/new` | 增：填写表单创建 |
+| 记录详情 | `/items/:id` | 查：单条详情、payload 展示、编辑 / 删除入口 |
+| 编辑记录 | `/items/:id/edit` | 改：部分更新，业务编号只读 |
 
 其它细节：
 
 - 删除操作有二次确认弹窗，避免误触
 - 操作结果通过浮层提示（成功 / 失败）
-- 搜索输入 300ms 防抖，快速切换筛选时丢弃过期响应
+- 分页以 `meta.total` 为准，删除当前页最后一条时自动回退一页
+- 表单校验业务编号、名称、金额精度与 payload JSON 合法性
 - 加载骨架屏、空状态、错误重试
 - 适配移动端，支持 `prefers-reduced-motion`
 
@@ -50,7 +51,7 @@
                    │  index.html + assets/*        │  ← 本仓库 CI 同步产物
                    └──────────────────────────────┘
 
-   前端 fetch ───▶ API Gateway (HTTP API) ───▶ Lambda ───▶ DynamoDB
+   前端 fetch ───▶ API Gateway (HTTP API) ───▶ Lambda ───▶ 数据库
                    （后端工程维护，地址通过 VITE_API_BASE_URL 注入）
 ```
 
@@ -83,8 +84,7 @@
 ├── src/
 │   ├── api/items.ts           # 接口封装（后端契约集中在这里）
 │   ├── components/            # 布局、表单、弹窗、提示等通用组件
-│   ├── hooks/                 # 防抖等自定义 Hook
-│   ├── lib/format.ts          # 时间格式化等工具函数
+│   ├── lib/format.ts          # 时间、金额、JSON 等格式化工具
 │   ├── pages/                 # 四个页面 + 404
 │   ├── App.tsx                # 路由表
 │   ├── main.tsx               # 应用入口
@@ -120,7 +120,7 @@ npm run dev                  # http://localhost:5173
 
 | 变量 | 说明 |
 | --- | --- |
-| `VITE_API_BASE_URL` | 后端 API Gateway 基础地址，例如 `https://xxxx.execute-api.ap-northeast-1.amazonaws.com/prod`。不要以 `/` 结尾。 |
+| `VITE_API_BASE_URL` | 后端 API Base URL（**已包含 stage 前缀**），例如 `https://x4oneny2hi.execute-api.ap-northeast-1.amazonaws.com/dev`。不要以 `/` 结尾。 |
 
 未配置时页面顶部会显示醒目提示，接口请求会直接失败并给出说明。
 
@@ -128,39 +128,55 @@ npm run dev                  # http://localhost:5173
 
 ## 后端接口约定
 
-前端按下列契约调用后端（实现见 [`src/api/items.ts`](src/api/items.ts)）。
-后端工程需保证路径与响应结构一致，如不一致只需修改该文件。
+对应后端「自检记录 API」（表 `t_migration_check`，仅用于验证发布链路），
+实现见 [`src/api/items.ts`](src/api/items.ts)。
+
+Base URL 已包含 stage 前缀，通过 `VITE_API_BASE_URL` 注入，例如
+`https://x4oneny2hi.execute-api.ap-northeast-1.amazonaws.com/dev`。
 
 | 方法 | 路径 | 说明 | 成功响应 |
 | --- | --- | --- | --- |
-| `GET` | `/items?status=&q=` | 列表；`status` 可选 `todo`/`doing`/`done`，`q` 为关键字 | `200 { items: Item[], count: number }` |
-| `POST` | `/items` | 新建 | `201 { item: Item }` |
-| `GET` | `/items/{id}` | 查询单条 | `200 { item: Item }` |
-| `PUT` | `/items/{id}` | 更新 | `200 { item: Item }` |
-| `DELETE` | `/items/{id}` | 删除 | `204` |
+| `GET` | `/items?limit=&offset=` | 分页列表，按 `id` 倒序 | `200 { data: Item[], meta: { total, limit, offset } }` |
+| `POST` | `/items` | 新建 | `201 { data: Item }` |
+| `GET` | `/items/{id}` | 单条查询 | `200 { data: Item }` |
+| `PUT` | `/items/{id}` | 部分更新，只提交要改的字段 | `200 { data: Item }` |
+| `DELETE` | `/items/{id}` | 软删除 | `204`，无响应体 |
 
 `Item` 结构：
 
 ```json
 {
-  "id": "9f1c2f7e-6a1d-4c1e-9d0e-3f2a1b4c5d6e",
-  "title": "整理需求评审材料",
-  "description": "补充数据指标说明",
-  "status": "todo",
-  "priority": "medium",
-  "dueDate": "2026-11-20",
-  "createdAt": "2026-11-06T02:10:00.000Z",
-  "updatedAt": "2026-11-06T02:10:00.000Z"
+  "id": 6,
+  "biz_no": "BIZ-0001",
+  "name": "示例记录",
+  "status": 1,
+  "amount": "12.50",
+  "payload": { "source": "web" },
+  "remark": "可选备注",
+  "is_deleted": 0,
+  "created_at": "2026-11-07 05:30:00",
+  "updated_at": "2026-11-07 05:30:00"
 }
 ```
 
-- `status`：`todo` | `doing` | `done`
-- `priority`：`low` | `medium` | `high`
-- `dueDate`：`YYYY-MM-DD` 或 `null`
-- 出错时返回非 2xx 状态码，响应体为 `{ "message": "错误说明" }`，前端会直接展示该文案。
+- `status`：`0` 待处理 / `1` 处理中 / `2` 已完成
+- `amount`：**字符串**，避免精度丢失，前端不做数值运算
+- `payload`：任意 JSON，可为 `null`
+- `biz_no`：创建后不可修改，更新时传入会被后端忽略
+- 时间为服务端原样字符串，无时区后缀，前端按原值展示
 
-**后端务必配置 CORS**：允许 CloudFront 域名（或 `*`）的
-`GET / POST / PUT / DELETE / OPTIONS` 请求。
+失败响应统一为 `{ "code": "...", "message": "..." }`，前端直接展示 `message`：
+
+| HTTP | `code` |
+| --- | --- |
+| 400 | `VALIDATION_ERROR` |
+| 404 | `NOT_FOUND` |
+| 500 | `INTERNAL_ERROR` |
+
+> 重复 `biz_no` 目前返回 **500 `INTERNAL_ERROR`** 而非 409，前端会原样提示。
+
+**CORS**：前端与 API 不同源，后端必须返回 `Access-Control-Allow-Origin`
+并正确响应 `OPTIONS` 预检（`Content-Type` 会触发预检）。
 
 ---
 
@@ -228,7 +244,7 @@ gh secret set AWS_DEPLOY_ROLE_ARN --repo tengsihai/react-aws --body "arn:aws:iam
 gh api --method PUT repos/tengsihai/react-aws/environments/dev
 gh variable set S3_BUCKET_NAME             --repo tengsihai/react-aws --env dev --body "<dev-bucket>"
 gh variable set CLOUDFRONT_DISTRIBUTION_ID --repo tengsihai/react-aws --env dev --body "<dev-distribution-id>"
-gh variable set VITE_API_BASE_URL          --repo tengsihai/react-aws --env dev --body "https://xxxx.execute-api.ap-northeast-1.amazonaws.com"
+gh variable set VITE_API_BASE_URL          --repo tengsihai/react-aws --env dev --body "https://x4oneny2hi.execute-api.ap-northeast-1.amazonaws.com/dev"
 
 # stg / prod 占位：等基础设施就绪后按同样方式配置 --env stg / --env prod
 ```
