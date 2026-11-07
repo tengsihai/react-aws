@@ -1,11 +1,13 @@
 name: 持续集成
 
-# 所有面向 dev（发布分支）的 PR 都会执行类型检查与构建，保证合并前代码可编译。
-# main 只接收发布成功后的归档提交，不在此处重复执行检查。
+# 发布检查：
+#   - 所有 PR 都跑类型检查与构建
+#   - push 到 main / dev / staging / prod 也跑
+# main 是归档分支，只跑检查，不触发发布。
 on:
   pull_request:
-    branches:
-      - dev
+  push:
+    branches: [main, dev, staging, prod]
 
 permissions:
   contents: read

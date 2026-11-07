@@ -1,7 +1,9 @@
 name: 部署前端（可复用工作流）
 
-# 由各环境的工作流调用（deploy-dev / deploy-stg / deploy-prod），
+# 由各环境的工作流调用（deploy-dev / deploy-staging / deploy-prod），
 # 本文件不直接监听分支事件，避免同一份逻辑复制三遍。
+#
+# 分支即环境：合并进哪条环境分支，就发布哪个环境；main 只做归档，不调用本工作流。
 #
 # 本流水线只负责「构建前端 → 同步静态资源 → 刷新 CloudFront 缓存」。
 # S3 桶、CloudFront 分发、OIDC 部署角色等基础设施由独立的基础设施工程创建与维护，
@@ -10,14 +12,9 @@ on:
   workflow_call:
     inputs:
       environment:
-        description: 目标环境（dev / stg / prod）
+        description: 目标环境（dev / staging / prod）
         required: true
         type: string
-      archive_to_main:
-        description: 发布成功后是否把 main 快进归档（仅 dev 环境使用）
-        required: false
-        type: boolean
-        default: false
 
 # 调用方需要授予相应权限；job 内可继续降级
 permissions:
@@ -46,15 +43,6 @@ jobs:
       VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
 
     steps:
-      - name: 校验发布来源分支
-        if: inputs.environment == 'prod'
-        run: |
-          # prod 只允许发布已经归档到 main 的版本
-          if [ "${GITHUB_REF_NAME}" != "main" ]; then
-            echo "::error::prod 环境只能从 main 分支发布（当前：${GITHUB_REF_NAME}）"
-            exit 1
-          fi
-
       - name: 检出代码
         uses: actions/checkout@v4
 
@@ -135,35 +123,3 @@ jobs:
             echo "- 静态资源桶：\`${S3_BUCKET_NAME}\`"
             echo "- CloudFront 分发：\`${CLOUDFRONT_DISTRIBUTION_ID}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-
-  # 发布成功后归档：main 只保存「已经发布成功」的快照，不参与日常开发。
-  # 采用快进（fast-forward）方式更新，确保 main 的历史与 dev 完全一致、不产生额外合并提交。
-  archive:
-    name: 归档到 main
-    if: inputs.archive_to_main
-    needs: deploy
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: write
-
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: dev
-
-      - name: 将 main 快进到已发布的提交
-        run: |
-          git fetch origin main
-
-          # 在 main 上尝试快进到本次发布提交
-          git checkout -B main origin/main
-          if ! git merge --ff-only "$GITHUB_SHA"; then
-            echo "::warning::main 无法快进到 ${GITHUB_SHA::7}（可能已分叉），请人工处理归档"
-            exit 0
-          fi
-
-          git push origin main
-          echo "已将 main 归档到 ${GITHUB_SHA::7}"

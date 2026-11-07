@@ -1,16 +1,19 @@
 name: 发布到 dev 环境
 
-# dev 分支是发布分支：人工把功能分支合并到 dev 后，本流水线自动构建并发布。
-# 发布成功后自动把 main 快进到本次提交，完成归档。
+# 分支即环境：合并进 dev 就发布 dev。
+# 合并 PR 就是审批，没有 workflow_dispatch，也没有手动选环境发布的入口。
+# main 只做归档，不在这里自动更新——归档走 prod → main 的 PR。
+#
+# 需要配置 GitHub Environment `dev`：
+#   Variables: S3_BUCKET_NAME、CLOUDFRONT_DISTRIBUTION_ID、VITE_API_BASE_URL
+#   Secret:    AWS_DEPLOY_ROLE_ARN
 on:
   push:
-    branches:
-      - dev
-  workflow_dispatch:
+    branches: [dev]
 
 permissions:
   id-token: write
-  contents: write # 归档任务需要向 main 推送
+  contents: read
 
 # 同一时间只允许一个发布任务，避免并发写同一个 S3 桶
 concurrency:
@@ -19,8 +22,10 @@ concurrency:
 
 jobs:
   deploy:
+    # 未接入的环境直接跳过，不产生红叉。接入新环境时把仓库变量
+    # DEPLOY_ENVIRONMENTS 改成 ["dev","staging","prod"]。
+    if: contains(fromJSON(vars.DEPLOY_ENVIRONMENTS || '["dev"]'), 'dev')
     uses: ./.github/workflows/_deploy.yml
     with:
       environment: dev
-      archive_to_main: true
     secrets: inherit
