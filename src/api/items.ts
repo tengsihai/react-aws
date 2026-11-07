@@ -1,23 +1,32 @@
-import type { Item, ItemInput, ItemStatus } from '../types'
+import type { Item, ItemCreateInput, ItemUpdateInput } from '../types'
 
-/** 构建时注入的 API Gateway 地址（见 .env.example / GitHub Actions） */
+/** 构建时注入的 API Base URL（已包含 /dev 这类 stage 前缀，见 .env.example） */
 const RAW_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').trim()
 const BASE_URL = RAW_BASE_URL.replace(/\/+$/, '')
 
-/** 后端约定的业务错误对象 */
-export class ApiError extends Error {
-  readonly status: number
+/** 后端统一的错误响应体 */
+interface ErrorBody {
+  code?: string
+  message?: string
+}
 
-  constructor(message: string, status: number) {
+export class ApiError extends Error {
+  /** HTTP 状态码；0 表示请求未到达服务端（网络错误 / 未配置地址） */
+  readonly status: number
+  /** 后端错误码，如 VALIDATION_ERROR、NOT_FOUND */
+  readonly code: string
+
+  constructor(message: string, status: number, code = '') {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.code = code
   }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!BASE_URL) {
-    throw new ApiError('未配置 VITE_API_BASE_URL，请先部署后端或填写 .env.local', 0)
+    throw new ApiError('未配置 VITE_API_BASE_URL，请先填写后端地址', 0)
   }
 
   let response: Response
@@ -30,71 +39,100 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       },
     })
   } catch {
-    // 网络层错误（断网、CORS 预检失败等）
-    throw new ApiError('网络请求失败，请检查网络连接或接口地址', 0)
+    // 网络层错误：断网、DNS 失败、CORS 预检被拦截等
+    throw new ApiError('网络请求失败，请检查网络或跨域配置', 0)
   }
 
+  // 删除成功返回 204，无响应体
   if (response.status === 204) {
     return undefined as T
   }
 
   const text = await response.text()
-  let data: unknown = null
+  let body: unknown = null
   if (text) {
     try {
-      data = JSON.parse(text)
+      body = JSON.parse(text)
     } catch {
-      data = null
+      body = null
     }
   }
 
   if (!response.ok) {
-    const message =
-      (data as { message?: string } | null)?.message ?? `请求失败（HTTP ${response.status}）`
-    throw new ApiError(message, response.status)
+    const error = (body ?? {}) as ErrorBody
+    throw new ApiError(
+      error.message || `请求失败（HTTP ${response.status}）`,
+      response.status,
+      error.code ?? '',
+    )
   }
 
-  return data as T
+  return body as T
 }
 
 export interface ListParams {
-  status?: ItemStatus
-  q?: string
+  /** 每页条数，1–100，默认 20 */
+  limit?: number
+  /** 跳过条数，默认 0 */
+  offset?: number
+}
+
+export interface ListResult {
+  items: Item[]
+  /** 未删除记录总数，翻页以它为准 */
+  total: number
+  limit: number
+  offset: number
+}
+
+interface SingleResponse {
+  data: Item
+}
+
+interface ListResponse {
+  data: Item[]
+  meta: { total: number; limit: number; offset: number }
 }
 
 export const itemsApi = {
-  /** 查询列表，可按状态过滤、按关键字搜索 */
-  list(params: ListParams = {}) {
-    const search = new URLSearchParams()
-    if (params.status) search.set('status', params.status)
-    if (params.q) search.set('q', params.q)
-    const query = search.toString()
-    return request<{ items: Item[]; count: number }>(`/items${query ? `?${query}` : ''}`)
+  /** 分页列表，按 id 倒序 */
+  async list({ limit = 20, offset = 0 }: ListParams = {}): Promise<ListResult> {
+    const query = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+    const body = await request<ListResponse>(`/items?${query}`)
+    return {
+      items: body.data ?? [],
+      total: body.meta?.total ?? 0,
+      limit: body.meta?.limit ?? limit,
+      offset: body.meta?.offset ?? offset,
+    }
   },
 
-  /** 查询单条 */
-  get(id: string) {
-    return request<{ item: Item }>(`/items/${encodeURIComponent(id)}`)
+  /** 单条查询 */
+  async get(id: number): Promise<Item> {
+    const body = await request<SingleResponse>(`/items/${id}`)
+    return body.data
   },
 
-  /** 新建 */
-  create(input: ItemInput) {
-    return request<{ item: Item }>('/items', {
+  /** 新增 */
+  async create(input: ItemCreateInput): Promise<Item> {
+    const body = await request<SingleResponse>('/items', {
       method: 'POST',
       body: JSON.stringify(input),
     })
+    return body.data
   },
 
-  /** 更新 */
-  update(id: string, input: ItemInput) {
-    return request<{ item: Item }>(`/items/${encodeURIComponent(id)}`, {
+  /** 部分更新：只提交要修改的字段 */
+  async update(id: number, patch: ItemUpdateInput): Promise<Item> {
+    const body = await request<SingleResponse>(`/items/${id}`, {
       method: 'PUT',
-      body: JSON.stringify(input),
+      body: JSON.stringify(patch),
     })
+    return body.data
   },
 
-  /** 删除 */
-  remove(id: string) {
-    return request<void>(`/items/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  /** 软删除 */
+  async remove(id: number): Promise<void> {
+    await request<void>(`/items/${id}`, { method: 'DELETE' })
   },
 }
