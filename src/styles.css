@@ -151,7 +151,7 @@ textarea {
   margin-left: 8px;
 }
 
-/* 环境徽标：一眼区分当前页面来自 dev / stg / prod */
+/* 环境徽标：一眼区分当前页面来自 dev / staging / prod */
 .env-badge {
   padding: 3px 9px;
   border-radius: 999px;
@@ -167,7 +167,7 @@ textarea {
   color: #4338ca;
 }
 
-.env-badge-stg {
+.env-badge-staging {
   background: #fff7ed;
   color: #c2410c;
 }
