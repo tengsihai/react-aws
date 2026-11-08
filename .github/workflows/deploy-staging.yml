@@ -1,0 +1,31 @@
+name: 发布到 staging 环境
+
+# 分支即环境：合并进 staging 就发布 staging。
+# 合并 PR 就是审批，没有 workflow_dispatch。
+#
+# 发布路径：feat/* ──PR──► dev ──PR──► staging ──PR──► prod ──PR──► main（归档）
+#
+# 需要配置 GitHub Environment `staging`：
+#   Variables: S3_BUCKET_NAME、CLOUDFRONT_DISTRIBUTION_ID、VITE_API_BASE_URL
+#   Secret:    AWS_DEPLOY_ROLE_ARN
+on:
+  push:
+    branches: [staging]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # 未接入的环境直接跳过；接入时把 DEPLOY_ENVIRONMENTS 改成
+    # ["dev","staging","prod"]。
+    if: contains(fromJSON(vars.DEPLOY_ENVIRONMENTS || '["dev"]'), 'staging')
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: staging
+    secrets: inherit

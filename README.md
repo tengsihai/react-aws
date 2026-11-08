@@ -76,11 +76,11 @@
 ```
 .
 ├── .github/workflows/
-│   ├── ci.yml                 # 面向 dev 的 PR：类型检查 + 构建
+│   ├── ci.yml                 # PR 及 main/环境分支 push：类型检查 + 构建
 │   ├── _deploy.yml            # 可复用发布流程：构建 → 同步 S3 → 刷新 CloudFront
-│   ├── deploy-dev.yml         # dev 分支推送：自动发布 dev 环境，并归档 main
-│   ├── deploy-stg.yml         # 手动触发：发布 stg 环境（占位）
-│   └── deploy-prod.yml        # 手动触发：发布 prod 环境（占位，仅限 main）
+│   ├── deploy-dev.yml         # 合并进 dev：发布 dev 环境
+│   ├── deploy-staging.yml     # 合并进 staging：发布 staging 环境
+│   └── deploy-prod.yml        # 合并进 prod：发布 prod 环境
 ├── src/
 │   ├── api/items.ts           # 接口封装（后端契约集中在这里）
 │   ├── components/            # 布局、表单、弹窗、提示等通用组件
@@ -184,47 +184,47 @@ Base URL 已包含 stage 前缀，通过 `VITE_API_BASE_URL` 注入，例如
 
 ### 环境
 
-代码里预留了三个环境，通过 GitHub Environments 隔离配置。`stg`、`prod` 目前只做占位，
-基础设施就绪后直接运行对应工作流即可，无需改动任何代码。
+**分支即环境，合并 PR 就是审批，`main` 只归档不部署。**
+三个环境通过 GitHub Environments 隔离配置，各自对应一条同名分支。
 
-| 环境 | 工作流 | 触发方式 | 来源分支 | 归档 main | 用途 |
-| --- | --- | --- | --- | --- | --- |
-| `dev` | `deploy-dev.yml` | 推送 `dev` 自动触发 | `dev` | ✅ | 日常发布 |
-| `stg` | `deploy-stg.yml` | Actions 页面手动运行（占位） | 建议 `dev` | ❌ | 预发验证 |
-| `prod` | `deploy-prod.yml` | Actions 页面手动运行（占位） | 仅允许 `main` | ❌ | 生产 |
+| 环境 | 工作流 | 触发方式 | 来源分支 | 用途 |
+| --- | --- | --- | --- | --- |
+| `dev` | `deploy-dev.yml` | 合并进 `dev` 自动触发 | `dev` | 日常发布 |
+| `staging` | `deploy-staging.yml` | 合并进 `staging` 自动触发 | `staging` | 预发验证 |
+| `prod` | `deploy-prod.yml` | 合并进 `prod` 自动触发 | `prod` | 生产 |
 
-环境标识会作为 `VITE_APP_ENV` 注入构建产物，页面顶部会显示 `dev` / `stg` / `prod`
+环境标识会作为 `VITE_APP_ENV` 注入构建产物，页面顶部会显示 `dev` / `staging` / `prod`
 徽标（本地开发显示 `local`），方便确认当前访问的是哪套环境。
 
-`prod` 工作流内置了两道约束，占位期间就已生效：
-
-- 强制校验来源分支必须是 `main`，避免把未归档的开发提交发到生产
-- 建议在 `Settings → Environments → prod` 中配置 **Required reviewers**，
-  让生产发布必须经过人工审批
+- **没有 `workflow_dispatch`**：发布只由「合并进环境分支」触发，不提供手动选环境发布的入口。
+- 未接入的环境由仓库变量 `DEPLOY_ENVIRONMENTS` 控制（默认 `["dev"]`），
+  不在列表里的环境会跳过部署 job，不产生红叉。
+- `prod` 建议在 `Settings → Environments → prod` 中配置 **Required reviewers**，
+  让生产发布在合并之外再经一道人工审批。
 
 ### 分支模型
 
 ```
-feature/xxx ──PR（人工合并）──▶ dev ──自动发布──▶ AWS
-                                 │
-                                 └──发布成功后自动归档（快进）──▶ main
+feature/xxx ──PR──► dev ──PR──► staging ──PR──► prod ──PR──► main（归档）
+                      │          │              │
+                      └ 发布 dev └ 发布 staging  └ 发布 prod
 ```
 
-- **`dev`**：唯一的发布分支。**只有推送到 dev 的代码才会触发 CI/CD 发布**。
-- **开发分支**：`feature/*`、`fix/*` 等，从 `dev` 切出，提交 PR 后由人工评审合并回 `dev`；
-  合并动作即触发发布。不要在 `main` 上开发或提交。
-- **`main`**：只存放**发布成功后**的归档快照。由流水线在部署成功后以快进
-  （fast-forward）方式自动更新，不接收人工提交，也不触发任何部署。
+- **`dev` / `staging` / `prod`**：环境分支，分支名即环境名。合并进哪条分支，
+  就发布哪个环境；合并动作即审批。
+- **功能分支**：`feature/*`、`fix/*` 等，从 `dev` 切出，提交 PR 后由人工评审合并回 `dev`。
+  不要在 `main` 或环境分支上直接开发。
+- **`main`**：只存放**发布成功后**的归档快照，不触发任何部署。归档走
+  `prod → main` 的 PR（合并 PR 即完成归档），不再由流水线自动快进。
 
-> 建议在 GitHub 仓库 `Settings → Branches` 中为 `dev` 开启分支保护：
-> 要求通过 PR 合并、要求 `持续集成` 检查通过，从流程上保证「人工合并后才发布」。
-> `main` 无需保护——它只会被发布流水线快进更新。
+> 建议在 GitHub 仓库 `Settings → Branches` 中为 `dev` / `staging` / `prod` 配 ruleset：
+> 必须走 PR、必须通过 `持续集成` 检查、禁止直接 push。`prod` 再加 Required reviewers。
 
 ### 发布前置配置（由基础设施工程提供）
 
 本仓库不创建任何 AWS 资源。**每个环境分别配置一套变量**，Secret 可在仓库级共享：
 
-`Settings → Environments → <env>` 中创建 `dev` / `stg` / `prod` 三个环境，并配置：
+`Settings → Environments → <env>` 中创建 `dev` / `staging` / `prod` 三个环境，并配置：
 
 | 名称 | 类型 | 作用域 | 说明 |
 | --- | --- | --- | --- |
@@ -246,12 +246,17 @@ gh variable set S3_BUCKET_NAME             --repo tengsihai/react-aws --env dev 
 gh variable set CLOUDFRONT_DISTRIBUTION_ID --repo tengsihai/react-aws --env dev --body "<dev-distribution-id>"
 gh variable set VITE_API_BASE_URL          --repo tengsihai/react-aws --env dev --body "https://x4oneny2hi.execute-api.ap-northeast-1.amazonaws.com/dev"
 
-# stg / prod 占位：等基础设施就绪后按同样方式配置 --env stg / --env prod
+# staging / prod：等基础设施就绪后按同样方式配置 --env staging / --env prod
 ```
+
+仓库级变量 `DEPLOY_ENVIRONMENTS`（Settings → Secrets and variables → Actions →
+Variables）决定哪些环境允许自动发布，默认 `["dev"]`；接入新环境时改成
+`["dev","staging","prod"]`。
 
 > 未配置变量的环境在工作流运行时会停在「校验发布配置」步骤，并明确指出缺少哪一项。
 
-部署角色的信任策略需允许本仓库 `dev` 分支，示例：
+部署角色的信任策略按 **GitHub Environment** 限定，每个环境一个角色；
+以下是 `dev` 的示例：
 
 ```json
 {
@@ -268,7 +273,7 @@ gh variable set VITE_API_BASE_URL          --repo tengsihai/react-aws --env dev 
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
         },
         "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:tengsihai/react-aws:ref:refs/heads/dev"
+          "token.actions.githubusercontent.com:sub": "repo:tengsihai/react-aws:environment:dev"
         }
       }
     }
@@ -316,14 +321,14 @@ gh variable set VITE_API_BASE_URL          --repo tengsihai/react-aws --env dev 
 
 `_deploy.yml` 是三个环境共用的可复用工作流，由各环境工作流传入 `environment` 调用：
 
-1. 校验发布来源分支（仅 `prod`：必须是 `main`）
-2. 检出代码、校验该环境的发布配置（缺少变量直接失败）
-3. 安装依赖并执行 `npm run build`（类型检查 + 生产构建，注入 `VITE_API_BASE_URL` 与 `VITE_APP_ENV`）
-4. 通过 OIDC 获取 AWS 临时凭证
-5. 确认目标 S3 桶与 CloudFront 分发存在
-6. 同步 `dist/` 到 S3（`--delete`，删除已不存在的旧文件）
-7. 创建 CloudFront 缓存失效（`/*`），在 Actions 摘要中输出发布信息
-8. 仅 `dev` 环境：发布成功后把 `main` 快进到本次提交完成归档（无法快进时告警，等待人工处理）
+1. 检出代码、校验该环境的发布配置（缺少变量直接失败）
+2. 安装依赖并执行 `npm run build`（类型检查 + 生产构建，注入 `VITE_API_BASE_URL` 与 `VITE_APP_ENV`）
+3. 通过 OIDC 获取 AWS 临时凭证
+4. 确认目标 S3 桶与 CloudFront 分发存在
+5. 同步 `dist/` 到 S3（`--delete`，删除已不存在的旧文件）
+6. 创建 CloudFront 缓存失效（`/*`），在 Actions 摘要中输出发布信息
+
+`main` 不参与发布：它只通过 `prod → main` 的 PR 归档，不触发任何部署。
 
 ### 缓存策略
 
@@ -334,12 +339,15 @@ gh variable set VITE_API_BASE_URL          --repo tengsihai/react-aws --env dev 
 
 ### 回滚
 
-发布的是 `dev` 分支的提交，回滚即恢复到上一个可用版本：
+发布的是环境分支的提交，回滚即恢复到上一个可用版本。以 dev 为例：
 
 ```bash
 git revert <有问题的提交>
-# 提交 PR 合并回 dev，流水线会自动重新发布，并在成功后把 main 归档到回滚后的提交
+# 提交 PR 合并回 dev，流水线会自动重新发布
 ```
+
+生产回滚同样在 `prod` 分支上 revert 并合并；之后按正常流程把 `prod` 合并到
+`main` 更新归档快照。
 
 ---
 

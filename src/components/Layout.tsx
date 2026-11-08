@@ -3,7 +3,7 @@ import { NavLink, Outlet } from 'react-router-dom'
 /** 全站布局：顶部导航 + 主体内容区 */
 export function Layout() {
   const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim()
-  // 环境标识由 CI 注入（dev / stg / prod），本地开发默认 local
+  // 环境标识由 CI 注入（dev / staging / prod），本地开发默认 local
   const appEnv = import.meta.env.VITE_APP_ENV?.trim() || 'local'
 
   return (

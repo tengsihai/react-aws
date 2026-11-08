@@ -1,16 +1,18 @@
-name: 发布到 prod 环境（占位）
+name: 发布到 prod 环境
 
-# 占位工作流：prod 环境的基础设施配置完成后即可直接使用，无需再改代码。
-# 触发方式：Actions 页面手动运行；建议在 prod 环境上配置 Required reviewers，
-# 让生产发布必须经过人工审批。流水线内部还会强制校验来源分支必须是 main，
-# 保证生产发布的是 dev 验证过、并已归档的版本。
+# 分支即环境：合并进 prod 就发布 prod。
+# 合并 PR 就是审批；生产发布再加一道人工审批，在 `prod` Environment 上配置
+# Required reviewers 即可（本工作流本身不再提供手动触发）。
 #
-# 需要在 GitHub 仓库 Settings → Environments 中创建 prod 环境，并配置：
+# 发布完成后，把 prod 通过 PR 合并到 main 完成归档；main 不触发任何部署。
+#
+# 需要配置 GitHub Environment `prod`：
 #   Variables: S3_BUCKET_NAME、CLOUDFRONT_DISTRIBUTION_ID、VITE_API_BASE_URL
-#   Secret:    AWS_DEPLOY_ROLE_ARN（可复用仓库级 Secret）
+#   Secret:    AWS_DEPLOY_ROLE_ARN
 #   Protection rules: Required reviewers（建议）
 on:
-  workflow_dispatch:
+  push:
+    branches: [prod]
 
 permissions:
   id-token: write
@@ -22,8 +24,9 @@ concurrency:
 
 jobs:
   deploy:
+    # 未接入的环境直接跳过；生产环境接入时把 DEPLOY_ENVIRONMENTS 加上 prod。
+    if: contains(fromJSON(vars.DEPLOY_ENVIRONMENTS || '["dev"]'), 'prod')
     uses: ./.github/workflows/_deploy.yml
     with:
       environment: prod
-      archive_to_main: false
     secrets: inherit
